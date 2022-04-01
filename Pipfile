@@ -1,0 +1,14 @@
+[[source]]
+url = "https://pypi.douban.com/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+pyqt5 = "*"
+apscheduler = "*"
+tendo = "*"
+pip
+[dev-packages]
+
+[requires]
+python_version = "3.7"
