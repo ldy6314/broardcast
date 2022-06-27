@@ -1,3 +1,11 @@
+from datetime import datetime as dt
+
+
+def current_time_str():
+    tm = dt.now()
+    return tm.strftime("%H:%M:%S"), tm.weekday()
+
+
 def parse_to_time(number):
     h = number // 3600
     number %= 3600
@@ -33,3 +41,4 @@ def weekdays_to_number(weekdays):
 
 if __name__ == '__main__':
     print(parse_to_weekdays(42))
+    print(current_time_str())

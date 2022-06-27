@@ -1,7 +1,7 @@
 import os
-from sched import scheduler
 
-from tendo import singleton
+import win32event,  win32api
+from winerror import ERROR_ALREADY_EXISTS
 from maiwindow import Ui_MainWindow
 from newtaskdig1 import Ui_Dialog
 from PyQt5.QtWidgets import QApplication, QHeaderView, QMainWindow, QDialog, QFileDialog, QAbstractItemView, \
@@ -19,12 +19,17 @@ from hashlib import md5
 from os import mkdir, getcwd
 from PyQt5 import QtGui
 import logging
-os.environ["PBR_VERSION"] = "4.0.2"
+from logging.handlers import RotatingFileHandler
 
+os.environ["PBR_VERSION"] = "4.0.2"
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-fh = logging.FileHandler('log.log')
+fh = RotatingFileHandler(
+    filename='log.txt',
+    maxBytes=1024*1024,
+    backupCount=3
+)
 fmt = logging.Formatter('[%(asctime)s] [%(levelname)s]%(message)s', '%Y-%m-%d %H:%M:%S')
 fh.setFormatter(fmt)
 logger.addHandler(fh)
@@ -96,15 +101,17 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.tableWidget.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tableWidget.setMouseTracking(True)
-
+        # tabWidget设置成0
+        self.textBrowser_2.setStyleSheet("color:blue")
         self.groupBox_4.hide()
         # 数据库文件
         self.db = QSqlDatabase.addDatabase("QSQLITE")
-        self.db.setDatabaseName("./task1.db")
+        self.db.setDatabaseName("./task2.db")
         self.db.open()
         self.q = QSqlQuery()
         # ######应该设置是否加入scheduler的字段，方便节假日切换模式
-        self.q.exec_("create table schedules(name TEXT,type TEXT, file TEXT, weekdays INT, time INT PRIMARY KEY)")
+        self.q.exec_("create table schedules(name TEXT,type TEXT, file TEXT, weekdays INT, time INT PRIMARY KEY, "
+                     "enable INT)")
         self.q.exec_("create table config (id int primary key, weather_mode int, rest_mode int, weekend int, "
                      "weekday int)")
         self.config_load()
@@ -123,6 +130,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.timer1.timeout.connect(self.show_current_time)
         # 音乐播放对象
         self.player = QtMultimedia.QMediaPlayer()
+
+
         # 信号与槽相关联
         self.pushButton.clicked.connect(lambda: self.show_config_task_dialog())
         self.pushButton_1.clicked.connect(self.remove_selected_task)
@@ -147,8 +156,20 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.player.stateChanged.connect(self.show_hide_control)
         self.pause_play_button.clicked.connect(self.pause_play_music)
         self.music_Slider.sliderReleased.connect(self.drag_music)
-        self.tabWidget.currentChanged.connect(self.move_scroll_top)
-        self.load_html('使用说明书.html')
+        self.tabWidget.currentChanged.connect(self.update_log)
+
+    def get_qss(self):
+        pass
+
+    def load_log(self, filename):
+        with open(filename) as f:
+            txt = f.read()
+            self.textBrowser_2.setText(txt)
+            self.textBrowser_2.moveCursor(self.textBrowser_2.textCursor().End)
+
+    def update_log(self, idx):
+        if idx == 2:
+            self.load_log('log.txt')
 
     def job_listener(self, event):
         job = self.sch.get_job(event.job_id)
@@ -257,7 +278,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         把所有数据库里的任务显示再窗口
         """
         self.tableWidget.setRowCount(0)
-        self.q.exec_("select * from schedules order by time")
+        self.q.exec_("select * from schedules where enable=1 order by time")
         while self.q.next():
             lst = []
             for i in range(5):
@@ -333,8 +354,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 logger.info('添加任务{}失败'.format(value))
                 return False
             else:
-                self.q.exec_("insert into schedules values('{}','{}','{}',{},{})".format(value[0], value[1], value[2],
-                                                                                        value[3], value[4]))
+                enable = 1
+                try:
+
+                    res = self.get_config()[0]
+                    # 正常天气,安全教育铃声不执行
+                    if not res[1] and value[1] == '安全教育' or res[1] and value[1] == '课间活动' or \
+                            res[2] and value[1] == '周末铃声':
+                        enable = 0
+                except IndexError:
+                    pass
+
+                self.q.exec_("insert into schedules values('{}','{}','{}',{},{},{})".format(value[0], value[1], value[2]
+                                                                                            , value[3], value[4],
+                                                                                            enable))
+
             logger.info('添加任务{}成功'.format(value))
             self.load_schedules()
             return True
@@ -361,10 +395,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 logger.info("修改任务{}->{}失败".format(old_value, new_value))
                 return False
             else:
+                res = self.get_config()[0]
+                enable = 1
+                if not res[1] and new_value[1] == '安全教育' or res[1] and new_value[1] == '课间活动' or \
+                        res[2] and new_value[1] == '周末铃声':
+                    enable = 0
                 self.q.exec_("delete from schedules where time = {}".format(old_value[4]))
-                self.q.exec_("insert into schedules values('{}','{}','{}',{},{})".format(new_value[0], new_value[1],
-                                                                                         new_value[2], new_value[3],
-                                                                                         new_value[4]))
+                self.q.exec_("insert into schedules values('{}','{}','{}',{},{},{})".format(new_value[0], new_value[1],
+                                                                                            new_value[2], new_value[3],
+                                                                                            new_value[4], enable))
             logger.info("修改任务{}->{}成功".format(old_value, new_value))
             self.load_schedules()
             return True
@@ -394,7 +433,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             dow = parse_to_weekdays(record[3])
             dow1 = tuple(map(lambda x: x - 1, list(dow)))
             dow = str(dow1)[1:-1].strip(',')
-            if dow:
+            enable = record[5]
+            if dow and enable:
                 self.sch.add_job(self.play_music_by_schedules, 'cron', hour=h, minute=m, second=s, day_of_week=dow,
                                  id=str(record[4]))
 
@@ -432,9 +472,22 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.play_music(filename)
 
     def play_music_by_schedules(self):
-        current_time = datetime.now().strftime("%H:%M:%S")
+        current_time, wk = current_time_str()
+        # 有可能由于任务没有按时执行，在重新执行的时候，找不到current_time所对应的时间
         res = self.tableWidget.findItems(current_time, Qt.MatchExactly)
-        row = res[0].row()
+        try:
+            row = res[0].row()
+        except IndexError:
+            # 到数据库中找到当前时间的上一个任务的时间
+            time_int = time_to_number(current_time)
+            self.q.exec_("select max(time) from schedules where time < {} and weekdays&{}<>0 and  enable=1".format(
+                time_int, 1 << wk))
+            while self.q.next():
+                tm = parse_to_time(self.q.value(0))
+                tm = "{:02}:{:02}:{:02}".format(*tm)
+            res = self.tableWidget.findItems(tm, Qt.MatchExactly)
+            row = res[0].row()
+
         self.tableWidget.verticalScrollBar().setSliderPosition(row)
         self.tableWidget.selectRow(row)
         filename = self.tableWidget.item(row, 4).text()
@@ -446,7 +499,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.q.exec_("select * from schedules")
         while self.q.next():
             line = []
-            for i in range(5):
+            for i in range(6):
                 line.append(self.q.value(i))
             res.append(tuple(line))
         return res
@@ -468,8 +521,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             QToolTip.showText(QCursor.pos(), text)
 
     def change_weather_mode(self):
-        # #####不是每一个学校都是周二，到周五进行大课间活动， 下面的应该进行软编码
-        # #####升旗仪式都是星期一吗，是否需要进行软编码
         n = 30
         if self.checkBox_2.checkState():
             if self.comboBox.currentIndex() == 0:
@@ -478,15 +529,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 n += 64
         if self.checkBox.checkState():
             # ####阴雨天气升旗也不会进行
-            self.q.exec_("update schedules set weekdays=0  where type='课间活动'")
-            self.q.exec_("update schedules set weekdays= {} where type='安全教育'".format(n))
+            self.q.exec_("update schedules set enable=0  where type='课间活动'")
+            self.q.exec_("update schedules set enable=1  where type='安全教育'")
             # 更改配置信息
             self.q.exec_("update config set weather_mode = 1")
             logger.info('切换为阴雨天模式')
 
         else:
-            self.q.exec_("update schedules set weekdays={}  where type='课间活动'".format(n))
-            self.q.exec_("update schedules set weekdays= 0 where type='安全教育'")
+            self.q.exec_("update schedules set enable=1  where type='课间活动'")
+            self.q.exec_("update schedules set enable=0 where type='安全教育'")
             # 更新配置信息
             self.q.exec_("update config set weather_mode = 0")
             logger.info('从阴雨天模式切回正常模式')
@@ -504,7 +555,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.comboBox_2.setEnabled(False)
             # 把所有类型为周末的铃声关闭
             # ######  关闭并不是直接取消，只不过是不加到任务里， 把可执行字段调整为 0
-            self.q.exec_("update schedules set weekdays=0 where type='周末铃声'")
+            self.q.exec_("update schedules set enable=0 where type='周末铃声'")
             # 找出数据库中所有weekday & m 值不是 0的行, 更新其值为 weekday ^ res
             self.q.exec_("update schedules set weekdays=(weekdays+{}) where  (weekdays&{}=0 and weekdays&{}<>0) "
                          "and (type='常规铃声'or ""type='课间活动' or type='安全教育') ".format(rest_day, rest_day, work_day))
@@ -514,7 +565,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         else:
             # 需要重新构思修改， 把可执行字段调整为 1， 否则原本只有周六的铃声会被调整为周六周日
             # #######
-            self.q.exec_("update schedules set weekdays=96 where type='周末铃声'")
+            self.q.exec_("update schedules set enable=1 where type='周末铃声'")
             self.q.exec_("update schedules set weekdays=(weekdays-{}) where (weekdays&{}!=0 and  weekdays&{}<>0) and "
                          "(type='常规铃声'or ""type='课间活动' or type='安全教育')".format(rest_day, rest_day, work_day))
             self.comboBox.setEnabled(True)
@@ -556,10 +607,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     self.q.exec_("insert into config values({},{},{},{},{})".format(config[0], config[1], config[2],
                                                                                     config[3], config[4]))
                     for data in info[2:]:
-                        data = eval(data.strip('\n'))
-                        self.q.exec_("insert into schedules values('{}','{}','{}',{},{})".format(data[0], data[1],
-                                                                                                 data[2], data[3],
-                                                                                                 data[4]))
+                        try:
+                            data = eval(data.strip('\n'))
+                            print(data)
+                            self.q.exec_("insert into schedules values('{}','{}','{}',{},{},{})".format(data[0], data[1],
+                                                                                                     data[2], data[3],
+                                                                                                     data[4],data[5]))
+                        except Exception as e:
+                            print(e)
+                            raise
                     QMessageBox.information(self, "提示", "如果文件从其他机器导入，请复制原来music文件夹里\n的音乐到本程序文件夹的music文件夹中，"
                                                         "并点击路径修正按钮", QMessageBox.Yes)
                     self.config_load()
@@ -715,11 +771,18 @@ class TrayIcon(QSystemTrayIcon):
 if __name__ == '__main__':
     app = QApplication(argv)
     win = MainWindow()
-    try:
-        me = singleton.SingleInstance()
-    except singleton.SingleInstanceException:
-        QMessageBox.information(win, '提示', '程序已经开启')
-        exit(-1)
-    win.load_qss("style12.qss")
+    mutex_name = "ldy6314"
+    mutex = win32event.CreateMutex(None, 1, mutex_name)
+    if win32api.GetLastError() == ERROR_ALREADY_EXISTS:
+        QMessageBox.warning(win, '警告', '该程序已经启动')
+        exit(0)
+    cwd = os.getcwd()
+    qss_dir = cwd + '/qss'
+    qss_list = list(filter(lambda s: s.endswith('.qss'), os.listdir(qss_dir)))
+    import random
+    qss = random.choice(qss_list)
+    print(qss)
+    win.load_qss(qss_dir+'/' + qss)
     win.show()
     exit(app.exec_())
+
